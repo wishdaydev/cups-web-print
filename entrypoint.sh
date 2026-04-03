@@ -1,26 +1,37 @@
 #!/bin/bash
-set -e  # 遇到错误立即退出
+set -e
 
-# 启动 CUPS（前台模式，放后台）
+# 启动 CUPS 服务（后台运行）
 /usr/sbin/cupsd -f &
 CUPS_PID=$!
 
-# 启动 Python 应用（放后台）
+# 等待 CUPS 完全就绪（最长等待30秒）
+echo "Waiting for CUPS to be ready..."
+for i in {1..30}; do
+    if lpstat -r 2>/dev/null | grep -q "scheduler is running"; then
+        echo "CUPS is ready."
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "Timeout waiting for CUPS to start." >&2
+        exit 1
+    fi
+    sleep 1
+done
+
+# 启动 Flask 应用
 python3 /app/app.py &
 APP_PID=$!
 
-# 定义一个清理函数
+# 定义清理函数（可选）
 cleanup() {
-    echo "Shutting down services..."
+    echo "Shutting down..."
     kill $CUPS_PID $APP_PID 2>/dev/null
-    exit 0
 }
+trap cleanup EXIT
 
-# 捕获 SIGTERM 信号，优雅关闭
-trap cleanup SIGTERM SIGINT
-
-# 等待任意子进程退出
+# 等待任意一个进程退出
 wait -n
 
-# 如果到这里说明某个进程退出了，执行清理
-cleanup
+# 当任意进程退出时，脚本结束，容器退出
+exit $?
