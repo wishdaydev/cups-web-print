@@ -14,12 +14,12 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Image Tag,镜像标签'
+        description: 'Image Tag--镜像标签'
         required: false
         type: string
         default: 'latest'
       platforms:
-        description: 'Target Platform-目标平台'
+        description: 'Target Platform--目标平台'
         required: false
         type: string
         default: 'linux/amd64,linux/arm64'
