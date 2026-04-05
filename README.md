@@ -95,7 +95,7 @@ docker run -d \
 docker exec cups-web-print lpadmin -p Canon_G3881 -v ipp://192.168.1.16:631/ipp/print -m everywhere -E
 ```
 ### 3. 使用 Web 界面
-####打开浏览器访问 `http://localhost:5000`，局域网内设备访问 `http://cups服务器ip:5000`
+#### 打开浏览器访问 `http://localhost:5000`，局域网内设备访问 `http://cups服务器ip:5000`
 
 ## 部署指导-本地安装
 
@@ -369,7 +369,44 @@ A web-based print service built with Python Flask and CUPS, supporting file uplo
 - **PDF Processing**: poppler-utils (pdftoppm), pdftk
 - **IPP Protocol**: ipptool (cups-client)
 
-## Deployment Guide
+## Deployment Guide - Container Installation (Recommended)
+
+### 1. Deploy the Container
+
+```bash
+# Privileged mode is required for USB printers. If using only network printers, you can remove the USB mount and privileged flag.
+
+docker run -d \
+  --name cups-web-print \
+  --hostname=cups-web-print \
+  --restart unless-stopped \
+  --privileged \
+  -p 5000:5000 \
+  -p 631:631 \
+  -v /var/run/dbus:/var/run/dbus \
+  -v /dev/bus/usb:/dev/bus/usb \
+  -v cups-etc:/etc/cups \
+  -v cups-spool:/var/spool/cups \
+  -v cups-log:/var/log/cups \
+  -v cups-uploads:/app/uploads \
+  -v cups-previews:/app/previews \
+  ghcr.io/wishday/cups-web-print:latest
+```
+
+### 2. Add a CUPS Printer
+
+#### Using a network printer as an example. For other printer types, manually enter the container and refer to the official CUPS documentation.
+
+```bash
+# It is recommended to assign a static IP to the printer to avoid complex mDNS resolution.
+docker exec cups-web-print lpadmin -p Canon_G3881 -v ipp://192.168.1.16:631/ipp/print -m everywhere -E
+```
+
+### 3. Use the Web Interface
+
+#### Open a browser and visit http://localhost:5000. For devices on the local network, visit http://<cups-server-ip>:5000
+
+## Deployment Guide-Local Installation
 
 ### 1. Download Source Code
 
