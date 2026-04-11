@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# 配置初始化与权限修复
+if [ ! -f /etc/cups/cupsd.conf ]; then
+    echo "Restoring default CUPS configuration from /etc/cups-default..."
+    cp -r /etc/cups-default/* /etc/cups/
+fi
+chown -R lp:lp /etc/cups /var/spool/cups /var/log/cups
+
 # 启动 CUPS 服务（后台运行）
 /usr/sbin/cupsd -f &
 CUPS_PID=$!
