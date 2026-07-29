@@ -197,23 +197,22 @@ def _check_tcp_port(hostname, port, timeout=5):
     检查 TCP 端口是否开放
     """
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        result = sock.connect_ex((hostname, port))
-        sock.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            result = sock.connect_ex((hostname, port))
 
-        if result == 0:
-            return {
-                'online': True,
-                'method': 'socket',
-                'message': f'端口 {port} 开放'
-            }
-        else:
-            return {
-                'online': False,
-                'method': 'socket',
-                'message': f'端口 {port} 无法连接'
-            }
+            if result == 0:
+                return {
+                    'online': True,
+                    'method': 'socket',
+                    'message': f'端口 {port} 开放'
+                }
+            else:
+                return {
+                    'online': False,
+                    'method': 'socket',
+                    'message': f'端口 {port} 无法连接'
+                }
 
     except socket.timeout:
         return {

@@ -403,14 +403,34 @@ def _parse_printer_input_tray(output):
     Returns:
         纸盒信息列表
     """
-    pattern = r'printer-input-tray\s*\([^)]+\)\s*=\s*(.+)'
-    match = re.search(pattern, output)
+    lines = output.split('\n')
+    start_line = None
+    for i, line in enumerate(lines):
+        if re.match(r'printer-input-tray\s*\(', line):
+            start_line = i
+            break
 
-    if not match:
+    if start_line is None:
         logger.debug("未找到 printer-input-tray 属性")
         return []
 
-    values_str = match.group(1)
+    # 收集从 start_line 开始的所有连续值行（值可能跨多行）
+    value_parts = []
+    in_value = False
+    for line in lines[start_line:]:
+        stripped = line.strip()
+        if not in_value:
+            if re.match(r'printer-input-tray\s*\(', stripped):
+                _, _, rest = stripped.partition('= ')
+                if rest:
+                    value_parts.append(rest)
+                in_value = True
+        else:
+            if not stripped or re.match(r'[\w][\w-]*\s*\(', stripped):
+                break
+            value_parts.append(stripped)
+
+    values_str = ' '.join(value_parts)
 
     # 分割多个纸盒（按 ;, 分隔）
     trays = []
@@ -461,50 +481,21 @@ def _parse_printer_status(output):
     printer_state_message_raw = extract_attr_value('printer-state-message', output)
     
     # 解析 printer-state
-    printer_state = None
-    if printer_state_raw:
-        state_match = re.search(r'enum\s*=\s*(\S+)', printer_state_raw)
-        if state_match:
-            printer_state = state_match.group(1)
-        else:
-            printer_state = printer_state_raw
+    printer_state = printer_state_raw
     
     # 解析 printer-state-reasons（转换为列表）
     printer_state_reasons = []
     if printer_state_reasons_raw:
-        reasons_match = re.search(r'keyword\)?\s*=\s*(.+)', printer_state_reasons_raw)
-        if reasons_match:
-            reasons_str = reasons_match.group(1).strip()
-            printer_state_reasons = [r.strip() for r in reasons_str.split(',')]
-        else:
-            printer_state_reasons = [r.strip() for r in printer_state_reasons_raw.split(',')]
+        printer_state_reasons = [r.strip() for r in printer_state_reasons_raw.split(',')]
     
     # 解析 printer-alert
-    printer_alert = None
-    if printer_alert_raw:
-        alert_match = re.search(r'octetString\)?\s*=\s*(.+)', printer_alert_raw)
-        if alert_match:
-            printer_alert = alert_match.group(1).strip()
-        else:
-            printer_alert = printer_alert_raw
+    printer_alert = printer_alert_raw
     
     # 解析 printer-alert-description
-    printer_alert_description = None
-    if printer_alert_description_raw:
-        desc_match = re.search(r'textWithoutLanguage\)?\s*=\s*(.+)', printer_alert_description_raw)
-        if desc_match:
-            printer_alert_description = desc_match.group(1).strip()
-        else:
-            printer_alert_description = printer_alert_description_raw
+    printer_alert_description = printer_alert_description_raw
     
     # 解析 printer-state-message
-    printer_state_message = None
-    if printer_state_message_raw:
-        msg_match = re.search(r'textWithoutLanguage\)?\s*=\s*(.+)', printer_state_message_raw)
-        if msg_match:
-            printer_state_message = msg_match.group(1).strip()
-        else:
-            printer_state_message = printer_state_message_raw
+    printer_state_message = printer_state_message_raw
     
     return {
         'printer_state': printer_state,

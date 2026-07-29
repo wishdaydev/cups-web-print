@@ -6,7 +6,6 @@ Web 打印服务 - 基于 Python Flask + CUPS
 """
 
 from flask import Flask, render_template, request, jsonify, send_from_directory
-from werkzeug.utils import secure_filename
 import os
 import subprocess
 import json
@@ -128,6 +127,15 @@ def _cleanup_upload(token):
         except Exception as e:
             logger.warning(f"清理残留文件失败：{path}, {e}")
 
+def _lpstat(args, timeout=5):
+    """执行 lpstat 并强制英文输出，避免 locale 影响解析"""
+    return subprocess.run(
+        ['lpstat'] + args,
+        capture_output=True, text=True, timeout=timeout,
+        env={**os.environ, 'LC_ALL': 'C'}
+    )
+
+
 def is_safe_path(base_path, target_path):
     """
     检查目标路径是否在基础路径内，防止路径遍历攻击
@@ -158,12 +166,7 @@ def get_printer_uri(printer_name):
         打印机URI字符串，如果失败返回None
     """
     try:
-        result = subprocess.run(
-            ['lpstat', '-p', printer_name, '-v'],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        result = _lpstat(['-p', printer_name, '-v'])
 
         if result.returncode != 0:
             logger.error(f"获取打印机URI失败: {result.stderr}")
@@ -219,12 +222,7 @@ def get_single_printer_status(printer_name, timeout=5):
         # 2. 获取 CUPS 队列状态
         status = 'idle'
         try:
-            result = subprocess.run(
-                ['lpstat', '-p', printer_name],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
+            result = _lpstat(['-p', printer_name])
             if result.returncode == 0:
                 line = result.stdout.strip()
                 if 'is ready' in line.lower():
@@ -602,12 +600,7 @@ def get_preview_file(original_filename):
 def get_printers():
     """获取可用的 CUPS 打印机列表（带在线状态检测）"""
     try:
-        result = subprocess.run(
-            ['lpstat', '-p'],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        result = _lpstat(['-p'])
         printers = []
         if result.returncode == 0:
             lines_output = result.stdout.strip().split('\n')
@@ -665,12 +658,7 @@ def get_printers():
 def get_printers_fast():
     """获取可用的 CUPS 打印机列表（快速版本，不进行在线探测）"""
     try:
-        result = subprocess.run(
-            ['lpstat', '-p'],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        result = _lpstat(['-p'])
         printers = []
         if result.returncode == 0:
             lines_output = result.stdout.strip().split('\n')
@@ -719,7 +707,7 @@ def extract_pdf_pages_to_tmp(input_pdf, page_range):
 
     Args:
         input_pdf: 输入 PDF 路径
-        page_range: 页面范围，如 "1-5,8,10-12"
+        page_range: 页面范围，如 "1-5 8 10-12"（空格分隔，不支持逗号）
 
     Returns:
         (pdf_path, error_message) 元组
@@ -728,7 +716,7 @@ def extract_pdf_pages_to_tmp(input_pdf, page_range):
         # 生成输出文件名到/tmp 目录
         base_name = os.path.splitext(os.path.basename(input_pdf))[0]
         unique_id = uuid.uuid4().hex[:8]
-        output_pdf = os.path.join('/tmp', f"print_{base_name}_{unique_id}_pages_{page_range.replace('-', '_').replace(',', '_')}.pdf")
+        output_pdf = os.path.join('/tmp', f"print_{base_name}_{unique_id}_pages_{page_range.replace('-', '_').replace(',', '_').replace(' ', '_')}.pdf")
 
         # 检查 pdftk 是否可用
         try:
@@ -777,7 +765,7 @@ def get_printable_file(filepath, filename, page_range=None):
     Args:
         filepath: 原始文件路径
         filename: 文件名
-        page_range: 页面范围，如 "1-5,8,10-12"
+        page_range: 页面范围，如 "1-5 8 10-12"（空格分隔，不支持逗号）
 
     Returns:
         (printable_path, error_message, is_temp_file) 元组
@@ -804,17 +792,6 @@ def get_printable_file(filepath, filename, page_range=None):
         return None, error, False
     return pdf_path, None, False
 
-    # 其他格式 - 尝试直接打印
-    logger.warning(f"未知文件类型，尝试直接打印：{filename}")
-    printable_path = get_safe_path(app.config['UPLOAD_FOLDER'], filepath)
-    if not printable_path:
-        logger.error(f"未知文件类型路径不安全：{filepath}")
-        return None, f"文件路径错误：{filename}", False
-    if not os.path.exists(printable_path):
-        return None, f"文件不存在：{filename}", False
-    return printable_path, None, False
-
-
 
 def submit_print_job(filepath, printer_name, color_mode='mono', duplex='one-sided', orientation='portrait', paper_size='A4', paper_type='plain', copies=1, page_range=None, mirror=False, print_scaling='fit'):
     """
@@ -829,7 +806,7 @@ def submit_print_job(filepath, printer_name, color_mode='mono', duplex='one-side
         paper_size: 纸张大小 (A4, A3, A5, 3.5x5, 4x6, 5x7, 8x10)
         paper_type: 纸张材质 (plain, photo, glossy, matte, envelope, cardstock, labels, auto)
         copies: 打印份数
-        page_range: 页面范围，格式如 "1-5,8,10-12"
+        page_range: 页面范围，格式如 "1-5 8 10-12"（空格分隔，不支持逗号）
         mirror: 是否镜像打印
         print_scaling: 打印缩放 (none, fill, fit, auto-fit, auto)
     """
@@ -933,7 +910,7 @@ def submit_print_job(filepath, printer_name, color_mode='mono', duplex='one-side
 
         # 添加镜像打印设置（水平翻转）
         if mirror:
-            cmd.extend(['-o', 'mirror-print'])
+            cmd.extend(['-o', 'mirror'])
         
         # 添加文件
         cmd.append(actual_print_file)
@@ -1054,12 +1031,7 @@ def monitor_job_progress(job_id, cups_job_id, printer_name):
             break
 
         try:
-            queue_result = subprocess.run(
-                ['lpstat', '-o', printer_name],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
+            queue_result = _lpstat(['-o', printer_name])
 
             job_in_queue = (
                 queue_result.returncode == 0 and
@@ -1153,7 +1125,7 @@ def get_printer_queue(printer_name):
     
     try:
         # 获取打印队列
-        result = subprocess.run(['lpstat', '-o'], capture_output=True, text=True, timeout=5)
+        result = _lpstat(['-o'])
         if result.returncode == 0 and result.stdout.strip():
             lines = result.stdout.strip().split('\n')
             for line in lines:
@@ -1176,12 +1148,7 @@ def get_printer_queue(printer_name):
     
     try:
         # 获取打印机状态
-        printer_status = subprocess.run(
-            ['lpstat', '-p', printer_name],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        printer_status = _lpstat(['-p', printer_name])
         if printer_status.returncode == 0:
             status_line = printer_status.stdout.strip()
             if "idle" in status_line.lower():
@@ -1275,12 +1242,7 @@ def api_printer_detail(printer_name):
 
     # 获取打印机基本信息
     try:
-        result = subprocess.run(
-            ['lpstat', '-p', printer_name, '-v'],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        result = _lpstat(['-p', printer_name, '-v'])
 
         for line in result.stdout.split('\n'):
             match = re.search(r'device\s+for\s+' + re.escape(printer_name) + r':\s*(\S+)', line)
@@ -1932,15 +1894,6 @@ def api_printer_queue(printer_name):
     """获取特定打印机的队列信息"""
     queue_info = get_printer_queue(printer_name)
     return jsonify(queue_info)
-
-@app.route('/uploads/<filename>')
-def uploaded_file(filename):
-    """访问上传的文件"""
-    # 防止路径遍历攻击
-    safe_filename = secure_filename(filename)
-    if safe_filename != filename:
-        return jsonify({'error': '无效的文件名'}), 400
-    return send_from_directory(app.config['UPLOAD_FOLDER'], safe_filename)
 
 if __name__ == '__main__':
     print("=" * 60)
