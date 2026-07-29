@@ -54,7 +54,7 @@ os.makedirs(app.config['PREVIEW_FOLDER'], exist_ok=True)
 from logging.handlers import RotatingFileHandler
 
 # 配置日志（使用 RotatingFileHandler 自动轮换）
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # 创建轮换处理器：单文件最大 1MB，保留 5 个备份文件
@@ -91,12 +91,24 @@ _upload_tokens_lock = threading.Lock()
 
 
 def _register_upload_file(token, filepath):
-    """注册上传文件路径，返回 (是否已取消, 是否应终止)"""
+    """注册上传文件路径，返回是否应终止"""
     with _upload_tokens_lock:
         entry = _upload_tokens.get(token)
         if not entry:
-            return True  # token 不存在，应终止
+            return True
         entry['files'].append(filepath)
+        if entry.get('cancelled'):
+            return True
+    return False
+
+
+def _register_upload_files(token, filepaths):
+    """批量注册上传文件路径，返回是否应终止"""
+    with _upload_tokens_lock:
+        entry = _upload_tokens.get(token)
+        if not entry:
+            return True
+        entry['files'].extend(filepaths)
         if entry.get('cancelled'):
             return True
     return False
@@ -310,7 +322,7 @@ def safe_filename(filename, allowed_extensions):
 
     # 4. 清理文件名中的非法字符（保留中文、英文、数字、下划线、连字符、空格、括号等）
     # 移除路径分隔符和控制字符
-    illegal_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\x00']
+    illegal_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '[', ']', ';', '\x00']
     safe_name = name_part
     for char in illegal_chars:
         safe_name = safe_name.replace(char, '')
@@ -392,7 +404,7 @@ def convert_pdf_to_images(pdf_path, output_dir, dpi=150, pdf_filename=None):
         if result.returncode == 0:
             # Find all generated images using glob
             # pdftoppm generates files like: prefix-1.png, prefix-2.png, ...
-            image_pattern = f"{output_prefix}-*.png"
+            image_pattern = f"{glob.escape(output_prefix)}-*.png"
             image_files = sorted(glob.glob(image_pattern))
 
             logger.info(f"Generated {len(image_files)} page images")
@@ -429,7 +441,7 @@ def get_preview_images(pdf_filename):
             base_name = pdf_filename
         
         # Image files are named: {base_name}-1.png, {base_name}-2.png, ...
-        image_pattern = os.path.join(app.config['PREVIEW_FOLDER'], f"{base_name}-*.png")
+        image_pattern = os.path.join(app.config['PREVIEW_FOLDER'], f"{glob.escape(base_name)}-*.png")
         image_files = sorted(glob.glob(image_pattern))
         
         # Extract page numbers from filenames
@@ -437,16 +449,14 @@ def get_preview_images(pdf_filename):
         for img_path in image_files:
             img_filename = os.path.basename(img_path)
             # Extract page number from filename like "document-1.png"
-            match = img_filename.replace(base_name + '-', '').replace('.png', '')
-            try:
-                page_num = int(match)
+            m = re.search(r'-(\d+)\.png$', img_filename)
+            if m:
+                page_num = int(m.group(1))
                 images.append({
                     'page': page_num,
                     'filename': img_filename
                     # Removed 'path' for security - frontend uses /api/preview/ endpoint
                 })
-            except ValueError:
-                continue
         
         return images
     
@@ -773,82 +783,36 @@ def get_printable_file(filepath, filename, page_range=None):
         (printable_path, error_message, is_temp_file) 元组
         成功返回 (文件路径，None, 是否临时文件)，失败返回 (None, 错误信息，False)
     """
-    # PDF 文件 - 使用 previews/目录的 PDF
-    if filename.lower().endswith('.pdf'):
-        base_name = os.path.splitext(filename)[0]
-        pdf_filename = f"{base_name}.pdf"
-        preview_pdf_path = get_safe_path(app.config['PREVIEW_FOLDER'], pdf_filename)
-        
-        # 检查预览 PDF 是否存在
-        if not preview_pdf_path or not os.path.exists(preview_pdf_path):
-            # 预览 PDF 不存在，返回错误
-            return None, f"预览文件不存在：{pdf_filename}，请重新上传", False
-        
-        if page_range and page_range.strip():
-            # 需要提取指定页面到/tmp 目录
-            logger.info(f"PDF 文件指定页面范围：{page_range}")
-            extracted_pdf, error = extract_pdf_pages_to_tmp(preview_pdf_path, page_range.strip())
-            if extracted_pdf:
-                return extracted_pdf, None, True  # 临时文件
-            else:
-                return None, error, False
-        
-        return preview_pdf_path, None, False
+    # 所有文件类型统一路径：在 previews/ 目录找 {base_name}.pdf
+    base_name = os.path.splitext(filename)[0]
+    pdf_filename = f"{base_name}.pdf"
+    pdf_path = get_safe_path(app.config['PREVIEW_FOLDER'], pdf_filename)
 
-    # 图片文件 - 使用预览 PDF（与文档相同逻辑）
-    if is_image_file(filename):
-        base_name = os.path.splitext(filename)[0]
-        pdf_filename = f"{base_name}.pdf"
-        pdf_path = get_safe_path(app.config['PREVIEW_FOLDER'], pdf_filename)
+    if not pdf_path:
+        logger.error(f"预览文件路径不安全：{pdf_filename}")
+        return None, f"预览文件路径错误：{pdf_filename}", False
+    if not os.path.exists(pdf_path):
+        logger.error(f"预览 PDF 不存在：{pdf_filename}，请重新上传")
+        return None, f"预览文件不存在：{pdf_filename}，请重新上传", False
 
-        if pdf_path and os.path.exists(pdf_path):
-            logger.info(f"使用图片预览 PDF: {pdf_path}")
-            if page_range and page_range.strip():
-                logger.info(f"从预览 PDF 提取页面范围：{page_range}")
-                extracted_pdf, error = extract_pdf_pages_to_tmp(pdf_path, page_range.strip())
-                if extracted_pdf:
-                    return extracted_pdf, None, True
-                else:
-                    return None, error, False
-            return pdf_path, None, False
-        elif not pdf_path:
-            logger.error(f"预览文件路径不安全：{pdf_filename}")
-            return None, f"预览文件路径错误：{pdf_filename}", False
-        else:
-            logger.error(f"预览 PDF 不存在：{pdf_filename}，请重新上传")
-            return None, f"预览文件不存在：{pdf_filename}，请重新上传", False
-
-    # Office 文档和其他需要转换的格式 - 使用预览 PDF
-    if is_document_file(filename):
-        # Use full filename with timestamp
-        base_name = os.path.splitext(filename)[0]
-        pdf_filename = f"{base_name}.pdf"
-        pdf_path = get_safe_path(app.config['PREVIEW_FOLDER'], pdf_filename)
-
-        # 检查预览 PDF 是否已存在
-        if pdf_path and os.path.exists(pdf_path):
-            logger.info(f"使用已存在的预览 PDF: {pdf_path}")
-            if page_range and page_range.strip():
-                # 从已有 PDF 提取指定页面到/tmp 目录
-                logger.info(f"从预览 PDF 提取页面范围：{page_range}")
-                extracted_pdf, error = extract_pdf_pages_to_tmp(pdf_path, page_range.strip())
-                if extracted_pdf:
-                    return extracted_pdf, None, True  # 临时文件
-                else:
-                    return None, error, False
-            return pdf_path, None, False
-        elif not pdf_path:
-            # get_safe_path() 返回 None，路径不安全
-            logger.error(f"预览文件路径不安全：{pdf_filename}")
-            return None, f"预览文件路径错误：{pdf_filename}", False
-        else:
-            # 预览 PDF 不存在，返回错误（应该在 api_upload() 中已转换）
-            logger.error(f"预览 PDF 不存在：{pdf_filename}，请重新上传")
-            return None, f"预览文件不存在：{pdf_filename}，请重新上传", False
+    logger.info(f"使用预览 PDF: {pdf_path}")
+    if page_range and page_range.strip():
+        logger.info(f"从预览 PDF 提取页面范围：{page_range}")
+        extracted_pdf, error = extract_pdf_pages_to_tmp(pdf_path, page_range.strip())
+        if extracted_pdf:
+            return extracted_pdf, None, True
+        return None, error, False
+    return pdf_path, None, False
 
     # 其他格式 - 尝试直接打印
     logger.warning(f"未知文件类型，尝试直接打印：{filename}")
-    return filepath, None, False
+    printable_path = get_safe_path(app.config['UPLOAD_FOLDER'], filepath)
+    if not printable_path:
+        logger.error(f"未知文件类型路径不安全：{filepath}")
+        return None, f"文件路径错误：{filename}", False
+    if not os.path.exists(printable_path):
+        return None, f"文件不存在：{filename}", False
+    return printable_path, None, False
 
 
 
@@ -863,7 +827,7 @@ def submit_print_job(filepath, printer_name, color_mode='mono', duplex='one-side
         duplex: one-sided/two-sided-long-edge/two-sided-short-edge
         orientation: portrait/landscape (打印方向)
         paper_size: 纸张大小 (A4, A3, A5, 3.5x5, 4x6, 5x7, 8x10)
-        paper_type: 纸张材质 (plain, glossy)
+        paper_type: 纸张材质 (plain, photo, glossy, matte, envelope, cardstock, labels, auto)
         copies: 打印份数
         page_range: 页面范围，格式如 "1-5,8,10-12"
         mirror: 是否镜像打印
@@ -913,7 +877,7 @@ def submit_print_job(filepath, printer_name, color_mode='mono', duplex='one-side
             '3.5x5': 'na_index-3.5x5_3.5x5in',       # 3.5×5 英寸照片
             '4x6': 'na_index-4x6_4x6in',         # 4×6 英寸照片 (102×152mm)
             '5x7': 'na_5x7_5x7in',               # 5×7 英寸照片 (127×178mm)
-            '8x10': 'na_govt-letter_8x10in',     # 8×10 英寸照片 (203×254mm)
+            '8x10': 'na_8x10_8x10in',              # 8×10 英寸照片 (203×254mm)
 
         }
         # 获取纸张大小，如果不在映射表中则使用 A4 作为默认值
@@ -1434,7 +1398,10 @@ def api_upload():
                             _cleanup_upload(token)
                             return jsonify({'error': '上传已取消'}), 499
                         logger.info(f"文档转换成功，生成预览图片：{pdf_path}")
-                        convert_pdf_to_images(pdf_path, app.config['PREVIEW_FOLDER'], pdf_filename=pdf_filename)
+                        images = convert_pdf_to_images(pdf_path, app.config['PREVIEW_FOLDER'], pdf_filename=pdf_filename)
+                        if token and images and _register_upload_files(token, images):
+                            _cleanup_upload(token)
+                            return jsonify({'error': '上传已取消'}), 499
 
                 # For images, convert using img2pdf
                 elif is_image_file(filename):
@@ -1447,7 +1414,10 @@ def api_upload():
                             _cleanup_upload(token)
                             return jsonify({'error': '上传已取消'}), 499
                         logger.info(f"图片转换成功，生成预览图片：{pdf_path}")
-                        convert_pdf_to_images(pdf_path, app.config['PREVIEW_FOLDER'], pdf_filename=pdf_filename)
+                        images = convert_pdf_to_images(pdf_path, app.config['PREVIEW_FOLDER'], pdf_filename=pdf_filename)
+                        if token and images and _register_upload_files(token, images):
+                            _cleanup_upload(token)
+                            return jsonify({'error': '上传已取消'}), 499
 
                 # For PDFs, copy to previews and generate images
                 elif ext.lower().endswith('.pdf'):
@@ -1465,7 +1435,10 @@ def api_upload():
 
                     if os.path.exists(pdf_path):
                         logger.info(f"PDF 文件，生成预览图片：{pdf_path}")
-                        convert_pdf_to_images(pdf_path, app.config['PREVIEW_FOLDER'], pdf_filename=pdf_filename)
+                        images = convert_pdf_to_images(pdf_path, app.config['PREVIEW_FOLDER'], pdf_filename=pdf_filename)
+                        if token and images and _register_upload_files(token, images):
+                            _cleanup_upload(token)
+                            return jsonify({'error': '上传已取消'}), 499
                     else:
                         logger.warning(f"PDF 文件不存在：{pdf_filename}")
                         if not conversion_warning:
@@ -1478,8 +1451,7 @@ def api_upload():
             
             response_data = {
                 'success': True,
-                'filename': filename,
-                'filepath': filepath
+                'filename': filename
             }
             if preview_images:
                 response_data['preview_images'] = preview_images
@@ -1630,7 +1602,6 @@ def api_list_files():
                     
                     file_info = {
                         'filename': filename,
-                        'filepath': filepath,
                         'size': stat.st_size,
                         'mtime': stat.st_mtime,
                         'type': file_type
@@ -1738,7 +1709,14 @@ def api_print():
         logger.error(f"JSON解析失败: {e}")
         return jsonify({'error': '请求数据格式错误'}), 400
 
-    filepath = data.get('filepath')
+    filename = data.get('filename', data.get('filepath'))
+    if filename:
+        filename = os.path.basename(filename)
+    filepath = get_safe_path(app.config['UPLOAD_FOLDER'], filename) if filename else None
+    if not filepath:
+        logger.warning(f"非法文件路径访问尝试: {filename}")
+        return jsonify({'error': '非法文件路径'}), 403
+
     printer_name = data.get('printer')
     color_mode = data.get('color_mode', 'mono')  # 默认改为mono（黑白）
     duplex = data.get('duplex', 'one-sided')
@@ -1757,6 +1735,7 @@ def api_print():
 
     # 记录解析后的参数
     logger.info(f"解析后的参数:")
+    logger.info(f"  filename: {filename}")
     logger.info(f"  filepath: {filepath}")
     logger.info(f"  printer_name: {printer_name}")
     logger.info(f"  color_mode: {color_mode}")
@@ -1783,7 +1762,7 @@ def api_print():
         return jsonify({'error': f'无效的纸张大小，支持的格式: {", ".join(valid_paper_sizes)}'}), 400
 
     # 验证纸张材质
-    valid_paper_types = ['plain', 'glossy']
+    valid_paper_types = ['plain', 'photo', 'glossy', 'matte', 'envelope', 'cardstock', 'labels', 'auto']
     if paper_type not in valid_paper_types:
         return jsonify({'error': f'无效的纸张材质，支持的类型: {", ".join(valid_paper_types)}'}), 400
 

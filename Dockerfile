@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-calc \
     libreoffice-impress \
     poppler-utils \
-    pdftk \
+    pdftk-java \
     python3-pip \
     # 中文字体（思源黑体 + 文泉驿备选）
     fonts-noto-cjk \

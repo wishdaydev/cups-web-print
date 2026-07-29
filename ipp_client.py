@@ -11,14 +11,6 @@ import tempfile
 import os
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-# 添加控制台处理器（如果没有）
-if not logger.handlers:
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
 
 # 检查 ipptool 是否可用
 def check_ipptool_available():

@@ -410,6 +410,8 @@
         let uploadedFile = null;
         let currentUploadXhr = null;
         let jobs = [];
+        let jobsTimerId = null;
+        let filesTimerId = null;
 
         // 页面范围验证函数
         function validatePageRange(value) {
@@ -600,7 +602,7 @@
             })();
 
             // 添加错误处理的定时器
-            setInterval(() => {
+            jobsTimerId = setInterval(() => {
                 try {
                     loadJobs();
                 } catch (e) {
@@ -608,13 +610,21 @@
                 }
             }, 3000);
 
-            setInterval(() => {
+            filesTimerId = setInterval(() => {
                 try {
                     loadFiles();
                 } catch (e) {
                     console.error('定时加载文件失败:', e);
                 }
             }, 8000);
+
+            // 页面卸载时清理定时器
+            window.addEventListener('beforeunload', () => {
+                clearInterval(jobsTimerId);
+                clearInterval(filesTimerId);
+                clearInterval(printerInfoTimerId);
+                if (previewCheckInterval) clearInterval(previewCheckInterval);
+            });
 
             // 定时刷新打印机信息（队列、墨盒、纸盒、打印机信息）- 每 11 秒
             // 注意：定时器在 resetPrinterInfoTimer() 中统一管理
@@ -986,7 +996,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        filepath: uploadedFile.filepath,
+                        filename: uploadedFile.filename,
                         printer: printerName,
                         color_mode: colorMode.value,
                         duplex: duplex ? duplex.value : 'one-sided',
@@ -1761,7 +1771,7 @@
                 const data = await response.json();
                 const file = data.files.find(f => f.filename === filename);
                 if (file) {
-                    uploadedFile = { filename: file.filename, filepath: file.filepath };
+                    uploadedFile = { filename: file.filename };
                     document.getElementById('previewFileName').textContent = file.filename;
                     document.getElementById('previewFileSize').textContent = '已上传文件';
                     
